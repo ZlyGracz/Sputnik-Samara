@@ -1,0 +1,24 @@
+# секреты и окружение
+.env
+
+# Java / Kotlin / Gradle / Maven
+target/
+build/
+.gradle/
+*.class
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# система и логи
+.DS_Store
+*.log
+
+# загруженные пользователями файлы
+uploads/
