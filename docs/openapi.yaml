@@ -1,0 +1,1288 @@
+openapi: 3.0.3
+info:
+  title: Спутник Самарского университета — API
+  version: 1.0.0
+  description: |
+    Контракт REST API платформы с курсами для студентов Самарского университета.
+    Это единый источник правды для фронтенда, бэкенда, БД и инфраструктуры.
+    Изменения вносятся только через Pull Request с уведомлением команды.
+
+    ## Общие правила
+    - Все пути начинаются с `/api`. Формат данных — JSON (UTF-8), кроме загрузки файлов (`multipart/form-data`).
+    - Аутентификация: заголовок `Authorization: Bearer <access_token>`. Токен выдаётся при входе или регистрации и живёт 24 часа.
+    - Идентификаторы сущностей — целые числа (`integer`), идентификаторы медиафайлов — UUID.
+    - Даты и время — ISO 8601, UTC (`2026-11-25T12:00:00Z`).
+    - Ошибки приходят в формате `{"detail": "текст ошибки"}`; ошибки валидации (422) — в стандартном формате FastAPI.
+
+    ## Роли и права (RBAC)
+    | Действие | Гость | `user` | `creator` | `admin` |
+    |---|---|---|---|---|
+    | Регистрация, вход, список опубликованных курсов | да | да | да | да |
+    | Прохождение курса, свои попытки и результаты | нет | да | да | да |
+    | Создание курсов, вопросов, загрузка медиа | нет | нет | да | да |
+    | Редактирование и удаление курса | нет | нет | только свои | любые |
+    | Просмотр правильных ответов и статистики курса | нет | нет | только свои курсы | любые |
+    | Список пользователей, выдача ролей, блокировка | нет | нет | нет | да |
+
+    ## Изоляция данных
+    - Пользователь видит только свои попытки (`/api/attempts/*`); чужая попытка отвечает `404`.
+    - Неопубликованный курс виден только владельцу и администратору; остальным он отвечает `404`.
+    - Правильные ответы не отправляются студенту, пока он не ответил на этот вопрос.
+
+    ## Правила для вопросов
+    - У вопроса обязателен текст; к нему можно приложить фото (`image_media_id`) и/или звук (`audio_media_id`).
+    - Вариантов ответа всегда ровно 4, правильный ровно один.
+    - Ответ на вопрос в рамках попытки даётся один раз и сразу показывает правильность.
+servers:
+  - url: http://localhost:8000
+    description: Backend (локально, docker compose)
+tags:
+  - name: System
+    description: Служебные эндпоинты
+  - name: Auth
+    description: Регистрация и вход
+  - name: Users
+    description: Управление пользователями и ролями (admin)
+  - name: Courses
+    description: Курсы
+  - name: Questions
+    description: Вопросы и варианты ответа (creator, admin)
+  - name: Media
+    description: Фото и аудио для вопросов и обложек
+  - name: Attempts
+    description: Прохождение курсов и результаты
+security:
+  - bearerAuth: []
+paths:
+  /api/health:
+    get:
+      tags: [System]
+      summary: Проверка работоспособности
+      security: []
+      responses:
+        '200':
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация
+      description: Создаёт пользователя с ролью `user` и сразу выдаёт токен.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Пользователь создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Пользователь заблокирован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Текущий пользователь
+      responses:
+        '200':
+          description: Данные текущего пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/users:
+    get:
+      tags: [Users]
+      summary: Список пользователей
+      description: 'Доступ: `admin`.'
+      parameters:
+        - name: search
+          in: query
+          description: Поиск по email и имени (подстрока, без учёта регистра)
+          schema:
+            type: string
+        - name: role
+          in: query
+          schema:
+            $ref: '#/components/schemas/Role'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Страница пользователей
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Users]
+      summary: Пользователь по id
+      description: 'Доступ: `admin`.'
+      responses:
+        '200':
+          description: Пользователь
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Users]
+      summary: Выдать роль или заблокировать пользователя
+      description: |
+        Доступ: `admin`. Администратор не может сменить роль или заблокировать самого себя (`409`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          description: Пользователь обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/courses:
+    get:
+      tags: [Courses]
+      summary: Каталог опубликованных курсов
+      description: Публичный. Возвращает только опубликованные курсы.
+      security: []
+      parameters:
+        - name: search
+          in: query
+          description: Поиск по названию и описанию
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Страница курсов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoursePage'
+    post:
+      tags: [Courses]
+      summary: Создать курс
+      description: 'Доступ: `creator`, `admin`. Курс создаётся неопубликованным, автором становится текущий пользователь.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CourseCreate'
+      responses:
+        '201':
+          description: Курс создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Course'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/courses/my:
+    get:
+      tags: [Courses]
+      summary: Мои курсы (включая черновики)
+      description: 'Доступ: `creator`, `admin`. Возвращает курсы текущего пользователя.'
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Страница курсов автора
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoursePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/courses/{course_id}:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    get:
+      tags: [Courses]
+      summary: Курс по id
+      description: |
+        Опубликованный курс виден всем. Неопубликованный — только владельцу и `admin`, остальным `404`.
+        Токен необязателен.
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Курс
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Course'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Courses]
+      summary: Изменить курс
+      description: |
+        Доступ: владелец курса или `admin`. Публикация: `is_published = true`
+        (нельзя опубликовать курс без вопросов — `409`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CourseUpdate'
+      responses:
+        '200':
+          description: Курс обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Course'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [Courses]
+      summary: Удалить курс
+      description: 'Доступ: владелец курса или `admin`. Вместе с курсом удаляются его вопросы, варианты и попытки.'
+      responses:
+        '204':
+          description: Курс удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/courses/{course_id}/questions:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    get:
+      tags: [Questions]
+      summary: Вопросы курса с правильными ответами
+      description: 'Доступ: владелец курса или `admin`. Для прохождения курса используйте `/api/courses/{course_id}/attempts`.'
+      responses:
+        '200':
+          description: Вопросы курса по порядку
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Question'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Questions]
+      summary: Добавить вопрос в курс
+      description: 'Доступ: владелец курса или `admin`. Вопрос добавляется в конец курса вместе с 4 вариантами ответа.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuestionInput'
+      responses:
+        '201':
+          description: Вопрос создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Question'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/courses/{course_id}/stats:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    get:
+      tags: [Courses]
+      summary: Статистика прохождения курса
+      description: 'Доступ: владелец курса или `admin`.'
+      responses:
+        '200':
+          description: Статистика
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourseStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/courses/{course_id}/attempts:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    post:
+      tags: [Attempts]
+      summary: Начать прохождение курса
+      description: |
+        Доступ: любой авторизованный пользователь. Курс должен быть опубликован.
+        Возвращает попытку с вопросами без правильных ответов.
+      responses:
+        '201':
+          description: Попытка создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttemptDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/questions/{question_id}:
+    parameters:
+      - $ref: '#/components/parameters/QuestionId'
+    put:
+      tags: [Questions]
+      summary: Заменить вопрос целиком
+      description: |
+        Доступ: владелец курса или `admin`. Заменяет текст, медиа, позицию и все 4 варианта.
+        Позиция `position` меняет порядок вопроса в курсе.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuestionInput'
+      responses:
+        '200':
+          description: Вопрос обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Question'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [Questions]
+      summary: Удалить вопрос
+      description: 'Доступ: владелец курса или `admin`.'
+      responses:
+        '204':
+          description: Вопрос удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/media:
+    post:
+      tags: [Media]
+      summary: Загрузить фото или аудио
+      description: |
+        Доступ: `creator`, `admin`. Тип определяется по содержимому файла.
+        Фото: JPEG, PNG, WebP, до 5 МБ. Аудио: MP3, OGG, WAV, до 10 МБ.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Файл загружен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Media'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: Файл слишком большой
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '415':
+          description: Неподдерживаемый тип файла
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/media/{media_id}:
+    get:
+      tags: [Media]
+      summary: Получить файл
+      description: |
+        Публичный (без токена): теги `<img>` и `<audio>` не умеют отправлять заголовок `Authorization`.
+        Защита — непредсказуемый UUID.
+      security: []
+      parameters:
+        - name: media_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Содержимое файла
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/attempts/my:
+    get:
+      tags: [Attempts]
+      summary: История моих попыток
+      description: Возвращает только попытки текущего пользователя, новые первыми.
+      parameters:
+        - name: course_id
+          in: query
+          description: Только попытки по этому курсу
+          schema:
+            type: integer
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Страница попыток
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttemptPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/attempts/{attempt_id}:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    get:
+      tags: [Attempts]
+      summary: Попытка с вопросами и ответами
+      description: |
+        Доступ: только владелец попытки (чужая — `404`). Правильные ответы показаны
+        только для вопросов, на которые уже дан ответ.
+      responses:
+        '200':
+          description: Попытка
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttemptDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/attempts/{attempt_id}/answers:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      tags: [Attempts]
+      summary: Ответить на вопрос
+      description: |
+        Доступ: владелец попытки. На каждый вопрос отвечают один раз.
+        `409` — вопрос уже отвечен или попытка завершена. `422` — вопрос или вариант не из этого курса.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnswerRequest'
+      responses:
+        '201':
+          description: Ответ принят
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnswerResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/attempts/{attempt_id}/finish:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      tags: [Attempts]
+      summary: Завершить попытку и получить результат
+      description: |
+        Доступ: владелец попытки. Неотвеченные вопросы считаются неверными.
+        Повторный вызов на завершённой попытке возвращает тот же результат.
+      responses:
+        '200':
+          description: Результат попытки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttemptDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Сколько элементов вернуть
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      description: Сколько элементов пропустить
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: integer
+    CourseId:
+      name: course_id
+      in: path
+      required: true
+      schema:
+        type: integer
+    QuestionId:
+      name: question_id
+      in: path
+      required: true
+      schema:
+        type: integer
+    AttemptId:
+      name: attempt_id
+      in: path
+      required: true
+      schema:
+        type: integer
+
+  responses:
+    Unauthorized:
+      description: Нет токена, токен недействителен или неверный email/пароль
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Недостаточно прав
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Не найдено (или скрыто правилами изоляции данных)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Конфликт состояния (дубликат, недопустимое действие)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ValidationError:
+      description: Ошибка валидации входных данных
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
+
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          example: Недостаточно прав
+
+    ValidationError:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            properties:
+              loc:
+                type: array
+                items:
+                  oneOf:
+                    - type: string
+                    - type: integer
+              msg:
+                type: string
+              type:
+                type: string
+
+    Role:
+      type: string
+      enum: [user, creator, admin]
+      description: '`user` — базовый пользователь, `creator` — создатель курсов, `admin` — администратор'
+      example: user
+
+    RegisterRequest:
+      type: object
+      required: [email, password, full_name]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          example: student@example.com
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+          example: Str0ngPass!
+        full_name:
+          type: string
+          minLength: 2
+          maxLength: 120
+          example: Иван Петров
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: student@example.com
+        password:
+          type: string
+          format: password
+          example: Str0ngPass!
+
+    AuthResponse:
+      type: object
+      required: [access_token, token_type, user]
+      properties:
+        access_token:
+          type: string
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        token_type:
+          type: string
+          enum: [bearer]
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      required: [id, email, full_name, role, is_active, created_at]
+      properties:
+        id:
+          type: integer
+          example: 1
+        email:
+          type: string
+          format: email
+          example: student@example.com
+        full_name:
+          type: string
+          example: Иван Петров
+        role:
+          $ref: '#/components/schemas/Role'
+        is_active:
+          type: boolean
+          example: true
+        created_at:
+          type: string
+          format: date-time
+
+    UserBrief:
+      type: object
+      required: [id, full_name]
+      properties:
+        id:
+          type: integer
+          example: 2
+        full_name:
+          type: string
+          example: Анна Сидорова
+
+    UserUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        role:
+          $ref: '#/components/schemas/Role'
+        is_active:
+          type: boolean
+
+    UserPage:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    Course:
+      type: object
+      required: [id, title, description, cover_url, is_published, author, questions_count, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          example: 1
+        title:
+          type: string
+          example: История России
+        description:
+          type: string
+          example: Ключевые события и личности от Древней Руси до XX века
+        cover_media_id:
+          type: string
+          format: uuid
+          nullable: true
+        cover_url:
+          type: string
+          nullable: true
+          description: Ссылка на обложку вида `/api/media/{id}`
+          example: /api/media/3f2b8c1e-9d4a-4c55-8a1e-2b7f6c0d9e11
+        is_published:
+          type: boolean
+          example: true
+        author:
+          $ref: '#/components/schemas/UserBrief'
+        questions_count:
+          type: integer
+          example: 10
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CourseCreate:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 200
+          example: История России
+        description:
+          type: string
+          maxLength: 5000
+          default: ''
+        cover_media_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    CourseUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 5000
+        cover_media_id:
+          type: string
+          format: uuid
+          nullable: true
+        is_published:
+          type: boolean
+
+    CoursePage:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Course'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    Media:
+      type: object
+      required: [id, kind, content_type, size_bytes, url]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 3f2b8c1e-9d4a-4c55-8a1e-2b7f6c0d9e11
+        kind:
+          type: string
+          enum: [image, audio]
+        content_type:
+          type: string
+          example: image/jpeg
+        size_bytes:
+          type: integer
+          example: 245760
+        url:
+          type: string
+          example: /api/media/3f2b8c1e-9d4a-4c55-8a1e-2b7f6c0d9e11
+
+    OptionInput:
+      type: object
+      required: [text, is_correct]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 300
+          example: Ярослав Мудрый
+        is_correct:
+          type: boolean
+          example: false
+
+    Option:
+      type: object
+      required: [id, text, is_correct]
+      properties:
+        id:
+          type: integer
+          example: 101
+        text:
+          type: string
+          example: Ярослав Мудрый
+        is_correct:
+          type: boolean
+
+    QuestionInput:
+      type: object
+      required: [text, options]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          example: Кто крестил Русь в 988 году?
+        image_media_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Фото к вопросу (загружается через `POST /api/media`)
+        audio_media_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Звуковой вопрос (загружается через `POST /api/media`)
+        position:
+          type: integer
+          minimum: 1
+          description: Порядковый номер в курсе. Если не указан — вопрос ставится в конец.
+        options:
+          type: array
+          minItems: 4
+          maxItems: 4
+          description: Ровно 4 варианта, ровно один с `is_correct = true`
+          items:
+            $ref: '#/components/schemas/OptionInput'
+
+    Question:
+      type: object
+      required: [id, course_id, position, text, image_url, audio_url, options]
+      properties:
+        id:
+          type: integer
+          example: 11
+        course_id:
+          type: integer
+          example: 1
+        position:
+          type: integer
+          example: 1
+        text:
+          type: string
+          example: Кто крестил Русь в 988 году?
+        image_media_id:
+          type: string
+          format: uuid
+          nullable: true
+        image_url:
+          type: string
+          nullable: true
+        audio_media_id:
+          type: string
+          format: uuid
+          nullable: true
+        audio_url:
+          type: string
+          nullable: true
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/Option'
+
+    QuestionStat:
+      type: object
+      required: [question_id, text, answers_count, correct_rate]
+      properties:
+        question_id:
+          type: integer
+        text:
+          type: string
+        answers_count:
+          type: integer
+        correct_rate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Доля правильных ответов (0..1)
+          example: 0.72
+
+    CourseStats:
+      type: object
+      required: [course_id, attempts_count, finished_count, average_percent, questions]
+      properties:
+        course_id:
+          type: integer
+        attempts_count:
+          type: integer
+          example: 25
+        finished_count:
+          type: integer
+          example: 18
+        average_percent:
+          type: number
+          format: float
+          description: Средний результат по завершённым попыткам, %
+          example: 68.5
+        questions:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuestionStat'
+
+    AttemptOption:
+      type: object
+      required: [id, text]
+      description: Вариант ответа без признака правильности
+      properties:
+        id:
+          type: integer
+          example: 101
+        text:
+          type: string
+          example: Ярослав Мудрый
+
+    AttemptQuestion:
+      type: object
+      required: [id, position, text, image_url, audio_url, options, selected_option_id, is_correct, correct_option_id]
+      properties:
+        id:
+          type: integer
+          example: 11
+        position:
+          type: integer
+          example: 1
+        text:
+          type: string
+          example: Кто крестил Русь в 988 году?
+        image_url:
+          type: string
+          nullable: true
+        audio_url:
+          type: string
+          nullable: true
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttemptOption'
+        selected_option_id:
+          type: integer
+          nullable: true
+          description: Выбранный вариант, `null` если ответа ещё нет
+        is_correct:
+          type: boolean
+          nullable: true
+          description: Заполнено только после ответа
+        correct_option_id:
+          type: integer
+          nullable: true
+          description: Заполнено только после ответа
+
+    AttemptDetail:
+      type: object
+      required: [id, course_id, course_title, status, started_at, finished_at, total_questions, answered_count, score, percent, questions]
+      properties:
+        id:
+          type: integer
+          example: 7
+        course_id:
+          type: integer
+          example: 1
+        course_title:
+          type: string
+          example: История России
+        status:
+          type: string
+          enum: [in_progress, finished]
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        total_questions:
+          type: integer
+          example: 10
+        answered_count:
+          type: integer
+          example: 3
+        score:
+          type: integer
+          nullable: true
+          description: Количество правильных ответов, заполнено после завершения
+        percent:
+          type: number
+          format: float
+          nullable: true
+          description: Результат в процентах, заполнено после завершения
+        questions:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttemptQuestion'
+
+    AttemptSummary:
+      type: object
+      required: [id, course_id, course_title, status, started_at, finished_at, total_questions, score, percent]
+      properties:
+        id:
+          type: integer
+        course_id:
+          type: integer
+        course_title:
+          type: string
+        status:
+          type: string
+          enum: [in_progress, finished]
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        total_questions:
+          type: integer
+        score:
+          type: integer
+          nullable: true
+        percent:
+          type: number
+          format: float
+          nullable: true
+
+    AttemptPage:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttemptSummary'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    AnswerRequest:
+      type: object
+      required: [question_id, option_id]
+      properties:
+        question_id:
+          type: integer
+          example: 11
+        option_id:
+          type: integer
+          example: 102
+
+    AnswerResult:
+      type: object
+      required: [question_id, selected_option_id, is_correct, correct_option_id]
+      properties:
+        question_id:
+          type: integer
+        selected_option_id:
+          type: integer
+        is_correct:
+          type: boolean
+        correct_option_id:
+          type: integer
