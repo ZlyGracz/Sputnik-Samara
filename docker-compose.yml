@@ -1,0 +1,62 @@
+name: sputnik
+
+# Запуск: docker compose up --build
+# Сайт:       http://localhost:8080
+# Swagger UI: http://localhost:8000/docs  (или http://localhost:8080/docs)
+# PostgreSQL снаружи: localhost:5433 (для DBeaver / pgAdmin)
+#
+# Файл .env необязателен: у всех переменных есть значения по умолчанию для разработки.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sputnik}
+      POSTGRES_USER: ${POSTGRES_USER:-sputnik}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sputnik_dev_password}
+    ports:
+      - "${DB_HOST_PORT:-5433}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sputnik}:${POSTGRES_PASSWORD:-sputnik_dev_password}@db:5432/${POSTGRES_DB:-sputnik}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+      MEDIA_DIR: /app/media
+      CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+      SEED_ON_START: ${SEED_ON_START:-true}
+    ports:
+      - "8000:8000"
+    volumes:
+      - media_data:/app/media
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+volumes:
+  pg_data:
+  media_data:
