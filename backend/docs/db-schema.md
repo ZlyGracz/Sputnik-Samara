@@ -171,17 +171,11 @@ erDiagram
 
 ## Запросы результатов и статистики
 
-Готовы в `backend/app/models/queries.py`, формат ответа совпадает со схемами контракта.
-
-| Функция | Эндпоинт | Схема |
-|---|---|---|
-| `my_attempts(db, user_id, course_id=None, limit, offset)` | `GET /api/attempts/my` | `AttemptPage` |
-| `course_stats(db, course_id)` | `GET /api/courses/{id}/stats` | `CourseStats` |
+В коде они реализованы через ORM в роутерах (`GET /api/attempts/my`, `GET /api/courses/{id}/stats`).
+Те же выборки «чистым» SQL лежат в [`docs/db-queries.sql`](db-queries.sql) — для проверки и отладки.
 
 - `percent = score * 100 / total_questions`, округление до 0,1; у незавершённой попытки `score` и `percent` равны `null`.
-- `average_percent` — по завершённым попыткам (0, если таких нет); `attempts_count` — все попытки, `finished_count` — завершённые.
-- `correct_rate` — доля правильных среди всех данных ответов вопроса (0..1), в том числе из незавершённых попыток; у вопроса без ответов — `0`.
-- Права (владелец курса или `admin`) проверяет роутер; `my_attempts` изолирует данные по `user_id` сам.
+- `average_percent` — по завершённым попыткам; `correct_rate` — доля правильных среди всех данных ответов вопроса.
 
 ## Работа с миграциями
 
