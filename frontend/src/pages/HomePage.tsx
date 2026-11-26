@@ -9,7 +9,7 @@ export function HomePage() {
           <h1 className="home-hero-title">
             Спутник
             <br />
-            Самарского
+            Самарского университета
           </h1>
           <p className="home-hero-subtitle">
             Курсы для студентов
