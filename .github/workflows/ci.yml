@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main, infra]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check Python syntax
+        run: python -m compileall -q app migrations seed
+
+      - name: Check media validator (magic bytes & limits)
+        run: |
+          python -c "
+          from app.media.validator import detect_media_spec, IMAGE_MAX_BYTES, AUDIO_MAX_BYTES
+          assert detect_media_spec(b'\xff\xd8\xff\xe0').content_type == 'image/jpeg'
+          assert detect_media_spec(b'\x89PNG\r\n\x1a\n').max_bytes == IMAGE_MAX_BYTES
+          assert detect_media_spec(b'RIFF\x00\x00\x00\x00WEBP').content_type == 'image/webp'
+          assert detect_media_spec(b'ID3\x03\x00').max_bytes == AUDIO_MAX_BYTES
+          assert detect_media_spec(b'OggS\x00').content_type == 'audio/ogg'
+          assert detect_media_spec(b'RIFF\x00\x00\x00\x00WAVE').content_type == 'audio/wav'
+          assert detect_media_spec(b'plain text fake jpg') is None
+          print('Media validator OK')
+          "
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build bundle
+        run: npm run build
+
+  docker:
+    name: Docker Compose smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: docker compose config -q
+
+      - name: Build and start services
+        run: docker compose up -d --build
+
+      - name: Wait for /api/health via Nginx
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/api/health; then
+              echo ""
+              echo "Healthcheck passed"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Healthcheck timed out"
+          docker compose logs
+          exit 1
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
