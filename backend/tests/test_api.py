@@ -257,3 +257,10 @@ def test_put_keeps_student_answers(client, make_user):
     assert r.status_code == 200
     d = client.get(f"{API}/attempts/{att['id']}", headers=student).json()
     assert d["answered_count"] == 1 and d["questions"][0]["is_correct"] is True and d["questions"][0]["text"] == "Правка"
+
+def test_validation_error_is_string(client):
+    r = client.post(f"{API}/auth/register", json={"email": "bad", "password": "1", "full_name": "A"})
+    assert r.status_code == 422
+    assert isinstance(r.json()["detail"], str)
+    r = client.get(f"{API}/nope")
+    assert r.status_code == 404 and isinstance(r.json()["detail"], str)
